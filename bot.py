@@ -22,11 +22,11 @@ async def findDuplicates(url, message):
     for line in lines:
         if re.match(resultRegex, line):
             print(line)
-            numResults = int(re.sub("\D", "", line))
+            numResults = int(re.sub('\D', '', line))
             if numResults:
                 await send(message.channel, '**{}** other instance(s) of this image have been found on the internet.\nThey can be found here: {}'.format(numResults, response.url))
             else:
-                await client.add_reaction(message, "\u2611")
+                await client.add_reaction(message, '\u2611')
             break
 
 @client.event
