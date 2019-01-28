@@ -1,7 +1,7 @@
 from pyshorteners import Shortener
 import discord
 import string
-import requests
+import grequests
 import json
 import re
 
@@ -9,7 +9,7 @@ with open('../KEY') as apiKey:
     KEY = apiKey.readline()
 
 TINEYE_LOCATION = 'https://www.tineye.com/search'
-GOOGLE_LOCATION = 'https://www.google.com/searchbyimage?image_url={}&encoded_image=&image_content=&filename=&hl=en'
+GOOGLE_LOCATION = 'https://www.google.com/searchbyimage?image_url={}'
 LINK_SHORTENER_LOCATION = 'https://www.googleapis.com/urlshortener/v1/url?key={}'.format(KEY)
 RESULT_REGEX = re.compile('\d{1,3}(,\d{3})*(\.\d+)? results?')
 MATCHING_REGEX = re.compile('Pages that include matching images')
@@ -19,39 +19,64 @@ HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:49.0) Gecko/201
 
 client = discord.Client()
 shortener = Shortener('Tinyurl')
+pending = {}
 
 async def send(location, message):
     global client
     embed = discord.Embed(title="", description=message)
     await client.send_message(location, embed=embed)
 
-def shorten(link):
-    return shortener.short(link)
+def shorten(url):
+    return shortener.short(url)
 
-async def findDuplicates(url, message):
-    print('Performing reverse image search on ' + url + '...')
-    results = []
-
-    # Tineye reverse image search
-    response = requests.post(TINEYE_LOCATION, data={'url': url})
+async def handleTineyeResponse(imageUrl, response):
+    print('tin came back')
     lines = response.text.split('\n')
     for line in lines:
         if re.match(RESULT_REGEX, line):
             if int(re.sub('\D', '', line)):
-                results.append('Tineye: ' + shorten(response.url))
+                pending[imageUrl]['tineye_result'] = shorten(response.url)
                 break
+    if pending[imageUrl]['tineye_result'] == None:
+        pending[imageUrl]['tineye_result'] = False
+    sendMessageIfResolved(imageUrl)
 
-    # Google reverse image search
-    searchUrl = 'https://www.google.com/searchbyimage?image_url={}'.format(url)
-    response = requests.get(searchUrl, allow_redirects=True, headers=HEADERS)
+async def handleGoogleResponse(imageUrl, response):
+    print('goog came back')
     result = re.search(MATCHING_REGEX, response.text)
-    if result: results.append('Google: ' + shorten(response.url))
+    if result: pending[imageUrl]['google_result'] = shorten(response.url)
+    else: pending[imageUrl]['google_result'] = False
+    sendMessageIfResolved(imageUrl)
 
-    if results:
-        await send(message.channel, 'Other instances of this image have been found on the internet.\nThey can be found here: \n{}'.format('\n'.join(results)))
-    else:
-        await client.add_reaction(message, '\u2611')
-    print('Done!')
+async def sendMessageIfResolved(imageUrl):
+    print(pending[imageUrl])
+    if (pending[imageUrl][tineye_result] != None and 
+        pending[imageUrl][google_result] != None):
+        # Both functions have resolved
+        if (pending[imageUrl][tineye_result] or
+            pending[imageUrl][google_result]):
+            # At least one of the functions returned a result
+            results = [pending[imageUrl][key] for key in pending[url] if pendingp[imageUrl][key]]
+            await send(message.channel, 'Other instances of this image have been found on the internet.\nThey can be found here: \n{}'.format('\n'.join(results)))
+        else:
+            await client.add_reaction(message, '\u2611')
+
+async def findDuplicates(imageUrl, message):
+    print('Performing reverse image search on ' + imageUrl + '...')
+    # Tineye reverse image search
+    # TODO: make a function that returns a handler function (to avoid passing params to hook function)
+    request = grequests.post(TINEYE_LOCATION, data={'url': imageUrl}, hooks={'response': handleTineyeResponse})
+    grequests.send(request, grequests.Pool(1))
+    
+    # Google reverse image search
+    # TODO: Maybe remove the allow_redirects
+    request = grequests.get(GOOGLE_LOCATION.format(imageUrl), allow_redirects=True, headers=HEADERS, hooks={'response': handleTineyeResponse})
+    grequests.send(request, grequests.Pool(1))
+
+    pending[imageUrl] =  {
+        'google_result': None,
+        'tineye_result': None
+    }
     
 @client.event
 async def on_message(message):
