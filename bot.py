@@ -1,7 +1,7 @@
 from pyshorteners import Shortener
+from requests_futures.sessions import FuturesSession
 import discord
 import string
-import grequests
 import json
 import re
 
@@ -28,26 +28,7 @@ async def send(location, message):
 
 def shorten(url):
     return shortener.short(url)
-
-async def handleTineyeResponse(imageUrl, response):
-    print('tin came back')
-    lines = response.text.split('\n')
-    for line in lines:
-        if re.match(RESULT_REGEX, line):
-            if int(re.sub('\D', '', line)):
-                pending[imageUrl]['tineye_result'] = shorten(response.url)
-                break
-    if pending[imageUrl]['tineye_result'] == None:
-        pending[imageUrl]['tineye_result'] = False
-    sendMessageIfResolved(imageUrl)
-
-async def handleGoogleResponse(imageUrl, response):
-    print('goog came back')
-    result = re.search(MATCHING_REGEX, response.text)
-    if result: pending[imageUrl]['google_result'] = shorten(response.url)
-    else: pending[imageUrl]['google_result'] = False
-    sendMessageIfResolved(imageUrl)
-
+    
 async def sendMessageIfResolved(imageUrl):
     print(pending[imageUrl])
     if (pending[imageUrl][tineye_result] != None and 
@@ -60,23 +41,53 @@ async def sendMessageIfResolved(imageUrl):
             await send(message.channel, 'Other instances of this image have been found on the internet.\nThey can be found here: \n{}'.format('\n'.join(results)))
         else:
             await client.add_reaction(message, '\u2611')
+        pending.pop(imageUrl, None)
+
+def googleHookFactory(imageUrl):
+    async def responseHook(response, *args, **kwargs):
+        print('goog came back')
+        result = re.search(MATCHING_REGEX, response.text)
+        if result: pending[imageUrl]['google_result'] = shorten(response.url)
+        else: pending[imageUrl]['google_result'] = False
+        await sendMessageIfResolved(imageUrl)
+    return responseHook
+
+def tineyeHookFactory(imageUrl):
+    async def responseHook(response, *args, **kwargs):
+        print('tin came back')
+        lines = response.text.split('\n')
+        for line in lines:
+            if re.match(RESULT_REGEX, line):
+                if int(re.sub('\D', '', line)):
+                    pending[imageUrl]['tineye_result'] = shorten(response.url)
+                    break
+        if pending[imageUrl]['tineye_result'] == None:
+            pending[imageUrl]['tineye_result'] = False
+        await sendMessageIfResolved(imageUrl)
+    return responseHook
+
+tineyeSession = FuturesSession()
+googleSession = FuturesSession()
 
 async def findDuplicates(imageUrl, message):
     print('Performing reverse image search on ' + imageUrl + '...')
     # Tineye reverse image search
     # TODO: make a function that returns a handler function (to avoid passing params to hook function)
-    request = grequests.post(TINEYE_LOCATION, data={'url': imageUrl}, hooks={'response': handleTineyeResponse})
-    grequests.send(request, grequests.Pool(1))
+    tineyeSession.hooks['response'] = tineyeHookFactory(imageUrl)
+    print(tineyeSession.hooks)
+    tineyeSession.post(TINEYE_LOCATION, data={'url': imageUrl})
     
     # Google reverse image search
     # TODO: Maybe remove the allow_redirects
-    request = grequests.get(GOOGLE_LOCATION.format(imageUrl), allow_redirects=True, headers=HEADERS, hooks={'response': handleTineyeResponse})
-    grequests.send(request, grequests.Pool(1))
+    googleSession.hooks['response'] = googleHookFactory(imageUrl)
+    print(googleSession.hooks)
+    googleSession.get(GOOGLE_LOCATION.format(imageUrl), allow_redirects=True, headers=HEADERS)
 
     pending[imageUrl] =  {
         'google_result': None,
         'tineye_result': None
     }
+    print(pending)
     
 @client.event
 async def on_message(message):
