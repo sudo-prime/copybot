@@ -1,7 +1,7 @@
 from pyshorteners import Shortener
-from requests_futures.sessions import FuturesSession
+import logging
+import aiohttp
 import discord
-import string
 import json
 import re
 
@@ -19,75 +19,38 @@ HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:49.0) Gecko/201
 
 client = discord.Client()
 shortener = Shortener('Tinyurl')
-pending = {}
+threads = []
 
 async def send(location, message):
     global client
     embed = discord.Embed(title="", description=message)
     await client.send_message(location, embed=embed)
 
-def shorten(url):
-    return shortener.short(url)
-    
-async def sendMessageIfResolved(imageUrl):
-    print(pending[imageUrl])
-    if (pending[imageUrl][tineye_result] != None and 
-        pending[imageUrl][google_result] != None):
-        # Both functions have resolved
-        if (pending[imageUrl][tineye_result] or
-            pending[imageUrl][google_result]):
-            # At least one of the functions returned a result
-            results = [pending[imageUrl][key] for key in pending[url] if pendingp[imageUrl][key]]
-            await send(message.channel, 'Other instances of this image have been found on the internet.\nThey can be found here: \n{}'.format('\n'.join(results)))
-        else:
-            await client.add_reaction(message, '\u2611')
-        pending.pop(imageUrl, None)
+async def findDuplicates(imageUrl, message):
+    print('Performing reverse image search on ' + imageUrl + '...')
+    results = []
 
-def googleHookFactory(imageUrl):
-    async def responseHook(response, *args, **kwargs):
-        print('goog came back')
-        result = re.search(MATCHING_REGEX, response.text)
-        if result: pending[imageUrl]['google_result'] = shorten(response.url)
-        else: pending[imageUrl]['google_result'] = False
-        await sendMessageIfResolved(imageUrl)
-    return responseHook
-
-def tineyeHookFactory(imageUrl):
-    async def responseHook(response, *args, **kwargs):
-        print('tin came back')
-        lines = response.text.split('\n')
+    # Tineye reverse image search
+    async with aiohttp.post(TINEYE_LOCATION, data={'url': imageUrl}) as response:
+        lines = (await response.text()).split('\n')
         for line in lines:
             if re.match(RESULT_REGEX, line):
                 if int(re.sub('\D', '', line)):
-                    pending[imageUrl]['tineye_result'] = shorten(response.url)
+                    results.append('Tineye: ' + shortener.short(response.url))
                     break
-        if pending[imageUrl]['tineye_result'] == None:
-            pending[imageUrl]['tineye_result'] = False
-        await sendMessageIfResolved(imageUrl)
-    return responseHook
 
-tineyeSession = FuturesSession()
-googleSession = FuturesSession()
-
-async def findDuplicates(imageUrl, message):
-    print('Performing reverse image search on ' + imageUrl + '...')
-    # Tineye reverse image search
-    # TODO: make a function that returns a handler function (to avoid passing params to hook function)
-    tineyeSession.hooks['response'] = tineyeHookFactory(imageUrl)
-    print(tineyeSession.hooks)
-    tineyeSession.post(TINEYE_LOCATION, data={'url': imageUrl})
-    
     # Google reverse image search
-    # TODO: Maybe remove the allow_redirects
-    googleSession.hooks['response'] = googleHookFactory(imageUrl)
-    print(googleSession.hooks)
-    googleSession.get(GOOGLE_LOCATION.format(imageUrl), allow_redirects=True, headers=HEADERS)
+    searchUrl = 'https://www.google.com/searchbyimage?image_url={}'.format(imageUrl)
 
-    pending[imageUrl] =  {
-        'google_result': None,
-        'tineye_result': None
-    }
-    print(pending)
+    async with aiohttp.get(searchUrl, allow_redirects=True, headers=HEADERS) as response:
+        result = re.search(MATCHING_REGEX, await response.text())
+        if result != None: results.append('Google: ' + shortener.short(response.url))
+
+    if results:
+        await send(message.channel, 'Other instances of this image have been found on the internet.\nThey can be found here: \n{}'.format('\n'.join(results)))
+    else:
+        await client.add_reaction(message, '\u2611')
+    
     
 @client.event
 async def on_message(message):
